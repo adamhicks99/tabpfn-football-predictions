@@ -1,0 +1,5 @@
+tabpfn-client==0.3.2
+pandas==2.3.3
+numpy==2.5.0
+scikit-learn==1.9.0
+mlflow==3.14.0
