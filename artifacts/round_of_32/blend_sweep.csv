@@ -1,9 +1,9 @@
 tabpfn_weight,log_loss,note
-0.00,0.8975,pure market (reference - not eligible)
-0.05,0.8982,best eligible (w>0)
-0.10,0.8990,production default (robust small weight)
-0.15,0.9001,
-0.25,0.9027,
+0.00,0.8955,pure market (Shin de-vig + sharp books; reference - not eligible)
+0.10,0.8970,production default + best eligible (w>0)
+0.20,0.8995,
+0.30,0.9028,
+0.40,0.9069,
 0.50,0.9119,
-0.75,0.9248,
-1.00,0.9414,pure TabPFN
+0.70,0.9240,
+1.00,0.9481,pure TabPFN

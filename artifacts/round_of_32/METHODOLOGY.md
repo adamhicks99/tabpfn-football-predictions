@@ -19,6 +19,13 @@ Uniform 1/3 scores ln(3) ≈ 1.0986.
   Euro 2020/2024, Copa 2024, AFCON 2021/2023, Gold Cup 2025, Nations League finals) plus the
   live R32.
 
+## Odds processing (the `market` probabilities)
+Each bookmaker's 3-way decimal odds are de-vigged with **Shin's method** (corrects the
+favorite-longshot bias that simple normalization leaves in), and the consensus is the median
+across **sharp books only** (Pinnacle / Betfair Exchange / Matchbook) when present, else all
+books. On the holdout this lowered the pure-market log-loss **0.8975 → 0.8955** vs the old
+proportional/all-books consensus — a free, principled gain that the 90%-market blend inherits.
+
 ## Pipeline
 1. **Features** (`features.py`): leakage-safe chronological pass for Elo/form/rest/h2h;
    market consensus joined per match. Sets: `base`, `odds`, `base+odds`.
@@ -34,10 +41,10 @@ Blend sweep (`blend_sweep.csv`), test = 181:
 
 | w (TabPFN weight) | log-loss |
 |---|---|
-| 0.00 — pure market (reference) | 0.8975 |
-| **0.10 — production default** | **0.8990** |
-| 0.05 — best eligible | 0.8982 |
-| 1.00 — pure TabPFN | 0.9414 |
+| 0.00 — pure market (reference) | 0.8955 |
+| **0.10 — production default + best eligible** | **0.8970** |
+| 0.50 | 0.9119 |
+| 1.00 — pure TabPFN | 0.9481 |
 
 The sweep is **monotone**: less TabPFN = lower log-loss, with the eligible optimum at the
 small-weight floor. So the production weight is kept small (0.10) — a thin TabPFN blend that
@@ -45,11 +52,12 @@ stays eligible while the well-calibrated market carries the signal.
 
 ## What the training-data expansion showed
 Growing the odds-covered set from **204 → 381** matches (notably the 63 WC-2026 group games)
-**did not let TabPFN beat the market** — pure TabPFN stayed worse (0.9414 vs market 0.8975),
-and the best eligible weight got *smaller* (0.15 → 0.05). Conclusion: the de-vigged market is
-near the ceiling for these tournaments; TabPFN-on-odds is recalibrating an already-sharp
-signal. The expansion still helped by making the thin blend more stable and confirming the
-ceiling.
+**did not let TabPFN beat the market** — pure TabPFN stayed worse (0.948 vs market 0.896),
+and the best eligible weight stays at the small-weight floor. Conclusion: the de-vigged
+market is near the ceiling for these tournaments; TabPFN-on-odds is recalibrating an
+already-sharp signal. The expansion still helped by making the thin blend more stable and
+confirming the ceiling. The biggest realized gain came from **better odds processing** (Shin
++ sharp books), not from more data or a heavier model.
 
 ## Honest caveats
 - The eligible blend's edge over raw market is negligible; its value is being the best

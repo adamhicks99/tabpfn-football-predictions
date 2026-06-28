@@ -54,12 +54,21 @@ Re-run `--blend` after the data changes and update `DEFAULT_BLEND_WEIGHT` in `pr
 The only component that spends money (The Odds API). Key is read via
 `--api-key-env NAME` or `--keychain-service/--keychain-account` (global flags, before the
 subcommand). Raw responses cache under `data/odds/raw/`, so re-runs are free; only new
-requests cost credits.
+requests cost credits. Consensus probabilities are de-vigged with **Shin's method** and taken
+across **sharp books** (Pinnacle / Betfair / Matchbook) when present — see `consensus_h2h`.
 
 ```bash
 python odds.py upcoming                          # dry run (no spend): show the planned call
 python odds.py discover                          # find more historical event IDs (quota-light)
 python odds.py fetch-historical --execute --max-credits N   # grow the training set (gated)
+python odds.py rebuild                           # re-derive features.csv from cache, free
+                                                 #   (after changing the de-vig / book logic)
+```
+
+**Right before submitting**, grab the closing line (bypasses the hourly cache):
+
+```bash
+python odds.py ... upcoming --execute --fresh    # latest line, then: python predict.py
 ```
 
 ## Develop
