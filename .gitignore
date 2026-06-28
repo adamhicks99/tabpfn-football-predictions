@@ -22,4 +22,6 @@ mlruns/
 predictions_*.csv
 secrets*.json
 submissions/
+submission*.csv
+experiments.csv
 workspace/

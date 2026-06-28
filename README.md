@@ -1,143 +1,71 @@
-# Football Lab
+# World Cup outcome predictions — TabPFN × market blend
 
-Football Lab builds immutable football datasets, evaluates models against fixed
-holdouts, and produces versioned result files for Prior's World Cup prediction
-competition.
+Predict home/draw/away probabilities for World Cup knockout games and minimize the
+competition **log-loss**. The production strategy is a **weighted blend of TabPFN and the
+de-vigged betting market**:
 
-The repository has four responsibilities:
+```
+submission = w · TabPFN(odds)  +  (1 − w) · market        # w = 0.15 (holdout-validated)
+```
 
-1. build reusable training datasets;
-2. build reusable evaluation datasets;
-3. create competition result datasets for future World Cup rounds;
-4. record every model run, metric, dataset version, and artifact in SQLite.
+Any `w > 0` uses TabPFN, so the submission is eligible; the sharper market carries most of
+the weight. On the holdout this beats both the raw market and pure TabPFN (see `artifacts/`).
+Training is restricted to matches that have betting odds.
 
-## Install
+## Files
 
-Python 3.12 and [uv](https://docs.astral.sh/uv/) are required.
+| File | Role |
+|---|---|
+| `data.py` | Load `results.csv`, join odds, `odds_covered` filter |
+| `features.py` | `build_features` (Elo/form/rest/h2h) + `FEATURE_SETS` (`base`, `odds`, `base+odds`) |
+| `models.py` | `MODELS` (`logistic`, `tabpfn`), `ordered_probabilities`, `log_loss` |
+| `odds.py` | The Odds API tool — historical fetch + live `upcoming` feed (the only paid part) |
+| `evaluate.py` | Holdout validation: score a model, or `--blend` to sweep blend weights |
+| `predict.py` | **Produce the submission** (the blend) for upcoming fixtures |
+
+## Make a submission
 
 ```bash
-uv sync --extra dev --locked --no-editable
+# 1. refresh the live bracket + odds (paid; ~1 credit)
+python odds.py --keychain-service prior-labs-football-the-odds-api \
+  --keychain-account adamhicks upcoming --execute
+
+# 2. write submission.csv (the blend)
+python predict.py
 ```
 
-All generated datasets and experiment records are stored under `workspace/`,
-which is excluded from Git.
+`predict.py` writes `submission.csv` in the Prior schema
+(`date,home_team,away_team,p_home_win,p_draw,p_away_win`) for the odds-feed games that have
+**not yet kicked off**. Override the blend with `--weight`, the model with `--model`, the
+features with `--features`.
 
-## Build datasets
-
-Training and evaluation datasets are immutable. Their versions are derived
-from the data content, source hash, date boundaries, and feature schema.
+## Validate / tune
 
 ```bash
-football-lab dataset build-training \
-  --name historical-baseline \
-  --source results.csv \
-  --start 2014-01-01 \
-  --end 2025-01-01 \
-  --max-rows 10000
-
-football-lab dataset build-evaluation \
-  --name holdout-2025 \
-  --source results.csv \
-  --start 2025-01-01 \
-  --end 2026-01-01
+python evaluate.py --blend                       # sweep blend weights -> best w
+python evaluate.py --model tabpfn --features odds # score one config vs the market
 ```
 
-Each command returns an exact reference such as:
+`evaluate.py` logs single-model runs to `experiments.csv` and prints log-loss vs the market.
+Re-run `--blend` after the data changes and update `DEFAULT_BLEND_WEIGHT` in `predict.py`.
 
-```text
-training/historical-baseline@a1b2c3d4e5f6
-evaluation/holdout-2025@b2c3d4e5f6a1
-```
+## Betting odds (`odds.py`)
 
-`@latest` is accepted for interactive use. Experiment records always retain the
-resolved immutable version.
-
-## Evaluate a model
+The only component that spends money (The Odds API). Key is read via
+`--api-key-env NAME` or `--keychain-service/--keychain-account` (global flags, before the
+subcommand). Raw responses cache under `data/odds/raw/`, so re-runs are free; only new
+requests cost credits.
 
 ```bash
-football-lab experiment run \
-  --model logistic \
-  --training training/historical-baseline@a1b2c3d4e5f6 \
-  --evaluation evaluation/holdout-2025@b2c3d4e5f6a1 \
-  --tag hypothesis=baseline \
-  --note "Initial fixed-dataset baseline"
+python odds.py upcoming                          # dry run (no spend): show the planned call
+python odds.py discover                          # find more historical event IDs (quota-light)
+python odds.py fetch-historical --execute --max-credits N   # grow the training set (gated)
 ```
 
-The run fits only the referenced training dataset. It writes out-of-sample
-predictions, records log loss, accuracy, and multiclass Brier score, and links
-all artifacts to the exact model and dataset versions.
-
-## Produce a Prior result dataset
-
-Create a fixture CSV for the confirmed matches in the next World Cup round:
-
-```csv
-date,home_team,away_team,tournament,status
-2026-06-28,South Africa,Canada,FIFA World Cup,confirmed
-```
-
-Build a versioned result:
+## Develop
 
 ```bash
-football-lab result build \
-  --name world-cup-round-32 \
-  --model tabpfn \
-  --training training/world-cup@a1b2c3d4e5f6 \
-  --history results.csv \
-  --fixtures fixtures/round-32.csv \
-  --as-of 2026-06-28
+python -m unittest discover -s tests -v
 ```
 
-The result dataset contains exactly the Prior upload schema:
-
-```text
-date,home_team,away_team,p_home_win,p_draw,p_away_win
-```
-
-Export a stable upload file:
-
-```bash
-football-lab result export \
-  result/world-cup-round-32@c3d4e5f6a1b2 \
-  --output submissions/world-cup-round-32.csv
-```
-
-Unconfirmed placeholders, unknown teams, duplicate matches, train/cutoff
-leakage, and invalid probability rows fail before a result is registered.
-
-## Query experiments
-
-List recent runs:
-
-```bash
-football-lab experiment list
-```
-
-Run a read-only SQL query:
-
-```bash
-football-lab experiment query "
-SELECT
-    e.model_name,
-    e.training_dataset_id,
-    e.evaluation_dataset_id,
-    m.value AS log_loss
-FROM experiments e
-JOIN metrics m ON m.experiment_id = e.id
-WHERE e.status = 'succeeded'
-  AND m.name = 'log_loss'
-ORDER BY m.value ASC
-"
-```
-
-The catalog is a standard SQLite database at `workspace/catalog.sqlite3`.
-
-## Development
-
-```bash
-./.venv/bin/ruff check .
-./.venv/bin/python -m unittest discover -s tests -v
-```
-
-See [ARCHITECTURE.md](ARCHITECTURE.md) for data contracts and storage
-invariants, and [SECURITY.md](SECURITY.md) for release requirements.
+`artifacts/round_of_32/` holds the methodology and the validated submission for the record.
