@@ -24,8 +24,10 @@ from models import MODELS, PROBABILITY_COLUMNS, get_model, ordered_probabilities
 MARKET_COLUMNS = ("odds_market_p_home", "odds_market_p_draw", "odds_market_p_away")
 
 # Weight on TabPFN in the blend; the rest is the de-vigged market.
-# Validated on the 2024-06-01 holdout (see evaluate.py --blend / artifacts/).
-DEFAULT_BLEND_WEIGHT = 0.15
+# The market dominates the holdout, so this is kept small (a thin TabPFN blend
+# that stays eligible). Best-eligible was w=0.15 on 204 training matches and
+# w=0.05 on 381; 0.10 is the robust middle. Re-check with: python evaluate.py --blend
+DEFAULT_BLEND_WEIGHT = 0.10
 
 
 def prepare(

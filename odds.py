@@ -67,11 +67,23 @@ class Tournament:
 
 
 TOURNAMENTS = (
+    # FIFA World Cup
     Tournament("world-cup-2022", "soccer_fifa_world_cup", "FIFA World Cup", "2022-11-20", "2022-12-18"),
+    Tournament("world-cup-2026-group", "soccer_fifa_world_cup", "FIFA World Cup", "2026-06-11", "2026-06-28"),
+    # UEFA Euro
+    Tournament("euro-2020", "soccer_uefa_european_championship", "UEFA Euro", "2021-06-11", "2021-07-12"),
     Tournament("euro-2024", "soccer_uefa_european_championship", "UEFA Euro", "2024-06-14", "2024-07-14"),
+    # Copa América
+    Tournament("copa-america-2021", "soccer_conmebol_copa_america", "Copa América", "2021-06-13", "2021-07-11"),
     Tournament("copa-america-2024", "soccer_conmebol_copa_america", "Copa América", "2024-06-20", "2024-07-14"),
+    # Africa Cup of Nations
+    Tournament("afcon-2021", "soccer_africa_cup_of_nations", "African Cup of Nations", "2022-01-09", "2022-02-07"),
     Tournament("afcon-2023", "soccer_africa_cup_of_nations", "African Cup of Nations", "2024-01-13", "2024-02-11"),
+    # CONCACAF Gold Cup
+    Tournament("gold-cup-2021", "soccer_concacaf_gold_cup", "Gold Cup", "2021-07-10", "2021-08-02"),
     Tournament("gold-cup-2023", "soccer_concacaf_gold_cup", "Gold Cup", "2023-06-24", "2023-07-16"),
+    Tournament("gold-cup-2025", "soccer_concacaf_gold_cup", "Gold Cup", "2025-06-14", "2025-07-07"),
+    # UEFA Nations League finals
     Tournament("nations-league-finals-2023", "soccer_uefa_nations_league", "UEFA Nations League", "2023-06-14", "2023-06-18"),
     Tournament("nations-league-finals-2025", "soccer_uefa_nations_league", "UEFA Nations League", "2025-06-04", "2025-06-08"),
 )
