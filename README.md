@@ -1,139 +1,143 @@
-# TabPFN Football Predictions
+# Football Lab
 
-This repository is a template to participate in Prior Labs' [World Cup Game Outcome Prediction competition](https://ux.priorlabs.ai/worldcup). It has a basic script that outputs predictions with a standard prediction template. Use this template to generate predictions. The `predict.py` script should only be a source of inspiration, feel free to fork the repo and add your own ideas.
+Football Lab builds immutable football datasets, evaluates models against fixed
+holdouts, and produces versioned result files for Prior's World Cup prediction
+competition.
 
-The script predicts international football match outcomes using [TabPFN](https://github.com/PriorLabs/TabPFN) using the [client repository](https://github.com/PriorLabs/tabpfn-client). It achieves ~59% accuracy and ~0.86 log-loss on held-out data. There is a good margin of progression. We look forward to your submission!
+The repository has four responsibilities:
 
-The model is trained on engineered features: ELO ratings, recent form, head-to-head record, rest days, and tournament importance. Data comes from [martj42/international_results](https://github.com/martj42/international_results).
+1. build reusable training datasets;
+2. build reusable evaluation datasets;
+3. create competition result datasets for future World Cup rounds;
+4. record every model run, metric, dataset version, and artifact in SQLite.
 
-This fork also includes named model/feature/dataset configurations, calendar
-walk-forward backtesting, point-in-time odds features, and MLflow experiment
-tracking. See [BACKTESTING.md](BACKTESTING.md).
+## Install
 
-## Setup
+Python 3.12 and [uv](https://docs.astral.sh/uv/) are required.
 
 ```bash
-git clone https://github.com/eliott-kalfon/tabpfn-football-predictions.git
-cd tabpfn-football-predictions
-pip install -r requirements.txt
+uv sync --extra dev --locked --no-editable
 ```
 
-## Run
+All generated datasets and experiment records are stored under `workspace/`,
+which is excluded from Git.
+
+## Build datasets
+
+Training and evaluation datasets are immutable. Their versions are derived
+from the data content, source hash, date boundaries, and feature schema.
 
 ```bash
-python predict.py \
-  --fixtures round_of_32_fixtures.csv \
-  --output round_of_32_predictions.csv
+football-lab dataset build-training \
+  --name historical-baseline \
+  --source results.csv \
+  --start 2014-01-01 \
+  --end 2025-01-01 \
+  --max-rows 10000
+
+football-lab dataset build-evaluation \
+  --name holdout-2025 \
+  --source results.csv \
+  --start 2025-01-01 \
+  --end 2026-01-01
 ```
 
-This will:
+Each command returns an exact reference such as:
 
-1. Download the full international results dataset (~47 000 matches) on first run
-2. Validate the explicit fixture manifest and reject past, duplicate, unknown,
-   or placeholder matchups
-3. Discard stale unplayed rows from the historical results source
-4. Build features with a single chronological pass (no leakage)
-5. Run a quick backtest on the previous calendar month and print accuracy + log-loss
-6. Train on up to 10 000 recent matches and predict only the supplied fixtures
-7. Save competition-format probabilities and print them to the console
-
-To refresh the dataset from source before predicting:
-
-```bash
-python predict.py \
-  --refresh \
-  --fixtures round_of_32_fixtures.csv
+```text
+training/historical-baseline@a1b2c3d4e5f6
+evaluation/holdout-2025@b2c3d4e5f6a1
 ```
 
-Run a tracked local baseline:
+`@latest` is accepted for interactive use. Experiment records always retain the
+resolved immutable version.
+
+## Evaluate a model
 
 ```bash
-python backtest.py --model logistic --run-name logistic-baseline
-```
-
-This evaluates `logistic / base / full_2018`, writes reproducibility artifacts
-under `artifacts/backtests/`, and records the run in the local MLflow database.
-Use `--no-mlflow` for an untracked smoke test.
-
-The prediction CLI uses TabPFN and the base feature set by default. Its model,
-feature set, odds source, and output path are configurable:
-
-```bash
-python predict.py \
+football-lab experiment run \
   --model logistic \
-  --features base \
-  --fixtures round_of_32_fixtures.csv \
-  --output predictions.csv
+  --training training/historical-baseline@a1b2c3d4e5f6 \
+  --evaluation evaluation/holdout-2025@b2c3d4e5f6a1 \
+  --tag hypothesis=baseline \
+  --note "Initial fixed-dataset baseline"
 ```
 
-For a final Round of 32 export, require all 16 confirmed fixtures:
+The run fits only the referenced training dataset. It writes out-of-sample
+predictions, records log loss, accuracy, and multiclass Brier score, and links
+all artifacts to the exact model and dataset versions.
+
+## Produce a Prior result dataset
+
+Create a fixture CSV for the confirmed matches in the next World Cup round:
+
+```csv
+date,home_team,away_team,tournament,status
+2026-06-28,South Africa,Canada,FIFA World Cup,confirmed
+```
+
+Build a versioned result:
 
 ```bash
-python predict.py \
-  --fixtures round_of_32_fixtures.csv \
-  --expected-fixtures 16 \
-  --output round_of_32_predictions.csv
+football-lab result build \
+  --name world-cup-round-32 \
+  --model tabpfn \
+  --training training/world-cup@a1b2c3d4e5f6 \
+  --history results.csv \
+  --fixtures fixtures/round-32.csv \
+  --as-of 2026-06-28
 ```
 
-The command fails rather than predicting unresolved bracket placeholders. The
-fixture manifest should be updated from the
-[official FIFA schedule](https://www.fifa.com/en/tournaments/mens/worldcup/canadamexicousa2026/articles/match-schedule-fixtures-results-teams-stadiums)
-as the remaining pairings are confirmed.
+The result dataset contains exactly the Prior upload schema:
 
-## Output
-
-```
-Latest played match in dataset: 2026-06-25
-Data freshness: 2 days 18:32:11
-
-Quick check 2026-05 (87 matches): accuracy 59%, log-loss 0.861
-
-9 fixture predictions -> round_of_32_predictions.csv
-
-  2026-06-28        South Africa vs Canada                -> away_win   H  24% | D  28% | A  47%
-  2026-06-29             Germany vs Paraguay              -> home_win   H  49% | D  29% | A  22%
-  ...
+```text
+date,home_team,away_team,p_home_win,p_draw,p_away_win
 ```
 
-## Features
+Export a stable upload file:
 
-| Feature | Description |
-|---|---|
-| `elo_diff` | ELO gap (home + home advantage - away) |
-| `home_elo`, `away_elo` | Current ELO ratings |
-| `form5_diff` | Difference in average points per game over last 5 matches |
-| `form10_diff` | Same over last 10 matches |
-| `home_winrate`, `away_winrate` | Win rate over last 10 matches |
-| `home_gf5`, `away_gf5` | Goals scored per game over last 5 matches |
-| `home_ga5`, `away_ga5` | Goals conceded per game over last 5 matches |
-| `gd10_diff` | Difference in average goal difference over last 10 matches |
-| `home_streak`, `away_streak` | Current win streak |
-| `home_rest`, `away_rest` | Days since last match (capped at 90) |
-| `home_played`, `away_played` | Total matches played in history |
-| `h2h_n` | Number of head-to-head meetings |
-| `h2h_home_winrate` | Home team win rate in head-to-head |
-| `h2h_draw_rate` | Draw rate in head-to-head |
-| `h2h_gd` | Average goal difference in head-to-head (from home team's perspective) |
-| `neutral` | 1 if played at a neutral venue |
-| `importance` | Tournament importance score (60 = World Cup, 20 = friendly) |
+```bash
+football-lab result export \
+  result/world-cup-round-32@c3d4e5f6a1b2 \
+  --output submissions/world-cup-round-32.csv
+```
+
+Unconfirmed placeholders, unknown teams, duplicate matches, train/cutoff
+leakage, and invalid probability rows fail before a result is registered.
+
+## Query experiments
+
+List recent runs:
+
+```bash
+football-lab experiment list
+```
+
+Run a read-only SQL query:
+
+```bash
+football-lab experiment query "
+SELECT
+    e.model_name,
+    e.training_dataset_id,
+    e.evaluation_dataset_id,
+    m.value AS log_loss
+FROM experiments e
+JOIN metrics m ON m.experiment_id = e.id
+WHERE e.status = 'succeeded'
+  AND m.name = 'log_loss'
+ORDER BY m.value ASC
+"
+```
+
+The catalog is a standard SQLite database at `workspace/catalog.sqlite3`.
 
 ## Development
 
-Run the offline test suite:
-
 ```bash
-python -m unittest discover -s tests -v
+./.venv/bin/ruff check .
+./.venv/bin/python -m unittest discover -s tests -v
 ```
 
-The implementation is intentionally flat:
-
-- `models.py` defines the model choices and competition scoring;
-- `features.py` defines leakage-safe feature sets;
-- `datasets.py` defines version-controlled evaluation protocols;
-- `backtest.py` evaluates one model/feature-set/dataset combination;
-- `odds.py` archives and audits historical market snapshots;
-- `tracking.py` records completed evaluations in MLflow.
-
-Before publishing or reporting a vulnerability, see
-[SECURITY.md](SECURITY.md). Direct dependencies are pinned and the repository
-does not contain default credential locations or raw secret values.
+See [ARCHITECTURE.md](ARCHITECTURE.md) for data contracts and storage
+invariants, and [SECURITY.md](SECURITY.md) for release requirements.
