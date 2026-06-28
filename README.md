@@ -1,56 +1,71 @@
-# World Cup win/draw/loss predictions
+# World Cup outcome predictions — TabPFN × market blend
 
-A small project to predict World Cup match outcome probabilities (home win / draw /
-away win) and lower the competition **log-loss**. Betting odds are the backbone:
-**training is restricted to matches that have odds**, and predictions need odds for
-the fixtures being predicted.
+Predict home/draw/away probabilities for World Cup knockout games and minimize the
+competition **log-loss**. The production strategy is a **weighted blend of TabPFN and the
+de-vigged betting market**:
+
+```
+submission = w · TabPFN(odds)  +  (1 − w) · market        # w = 0.15 (holdout-validated)
+```
+
+Any `w > 0` uses TabPFN, so the submission is eligible; the sharper market carries most of
+the weight. On the holdout this beats both the raw market and pure TabPFN (see `artifacts/`).
+Training is restricted to matches that have betting odds.
 
 ## Files
 
-| File | What it is |
+| File | Role |
 |---|---|
-| `data.py` | Load `results.csv`, join odds, filter to odds-covered matches |
+| `data.py` | Load `results.csv`, join odds, `odds_covered` filter |
 | `features.py` | `build_features` (Elo/form/rest/h2h) + `FEATURE_SETS` (`base`, `odds`, `base+odds`) |
-| `models.py` | `MODELS` dict (`logistic`, `tabpfn`) + log-loss |
-| `evaluate.py` | Score a (model, feature set) on a holdout vs the market baseline |
-| `predict.py` | Train and write the submission CSV for upcoming fixtures |
-| `odds.py` | The Odds API tool (historical + upcoming). The only thing that costs money. |
+| `models.py` | `MODELS` (`logistic`, `tabpfn`), `ordered_probabilities`, `log_loss` |
+| `odds.py` | The Odds API tool — historical fetch + live `upcoming` feed (the only paid part) |
+| `evaluate.py` | Holdout validation: score a model, or `--blend` to sweep blend weights |
+| `predict.py` | **Produce the submission** (the blend) for upcoming fixtures |
 
-## Iterate (the loop)
-
-Try a feature set + model; the number to lower is **log-loss**. Every run also prints
-the de-vigged market's log-loss (the baseline to beat) and appends to `experiments.csv`.
+## Make a submission
 
 ```bash
-./.venv/bin/python evaluate.py --model tabpfn --features base+odds
-./.venv/bin/python evaluate.py --model logistic --features base --note "no odds"
+# 1. refresh the live bracket + odds (paid; ~1 credit)
+python odds.py --keychain-service prior-labs-football-the-odds-api \
+  --keychain-account adamhicks upcoming --execute
+
+# 2. write submission.csv (the blend)
+python predict.py
 ```
 
-## Predict the next round
+`predict.py` writes `submission.csv` in the Prior schema
+(`date,home_team,away_team,p_home_win,p_draw,p_away_win`) for the odds-feed games that have
+**not yet kicked off**. Override the blend with `--weight`, the model with `--model`, the
+features with `--features`.
 
-Odds are the backbone, so first fetch the upcoming fixtures' odds (paid), then predict:
+## Validate / tune
 
 ```bash
-./.venv/bin/python odds.py upcoming --execute          # fetch R32 odds (current)
-./.venv/bin/python predict.py --model tabpfn --features base+odds
+python evaluate.py --blend                       # sweep blend weights -> best w
+python evaluate.py --model tabpfn --features odds # score one config vs the market
 ```
 
-`predict.py` writes `submission.csv` (model) and `submission_market.csv` (market-only
-fallback) in the Prior schema: `date,home_team,away_team,p_home_win,p_draw,p_away_win`.
+`evaluate.py` logs single-model runs to `experiments.csv` and prints log-loss vs the market.
+Re-run `--blend` after the data changes and update `DEFAULT_BLEND_WEIGHT` in `predict.py`.
 
 ## Betting odds (`odds.py`)
 
-The Odds API key is read with `--api-key-env NAME` or `--keychain-service/--keychain-account`.
-Raw responses cache under `data/odds/raw/`, so re-runs are free; only new requests cost credits.
+The only component that spends money (The Odds API). Key is read via
+`--api-key-env NAME` or `--keychain-service/--keychain-account` (global flags, before the
+subcommand). Raw responses cache under `data/odds/raw/`, so re-runs are free; only new
+requests cost credits.
 
 ```bash
-./.venv/bin/python odds.py upcoming --dry-run          # show plan, no spend
-./.venv/bin/python odds.py discover                    # find historical event IDs (quota-light)
-./.venv/bin/python odds.py fetch-historical --execute --max-credits N
+python odds.py upcoming                          # dry run (no spend): show the planned call
+python odds.py discover                          # find more historical event IDs (quota-light)
+python odds.py fetch-historical --execute --max-credits N   # grow the training set (gated)
 ```
 
 ## Develop
 
 ```bash
-./.venv/bin/python -m unittest discover -s tests -v
+python -m unittest discover -s tests -v
 ```
+
+`artifacts/round_of_32/` holds the methodology and the validated submission for the record.
