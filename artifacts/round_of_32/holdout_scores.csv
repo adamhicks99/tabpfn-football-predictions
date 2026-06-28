@@ -1,0 +1,7 @@
+model,features,cutoff,n_train,n_test,log_loss,accuracy,market_log_loss,eligible
+tabpfn,odds,2024-06-01,117,87,0.9919,0.5402,0.9618,yes
+tabpfn,base+odds,2024-06-01,117,87,1.0391,0.4483,0.9618,yes
+tabpfn,base,2024-06-01,117,87,1.0896,0.3793,0.9618,yes
+logistic,base,2024-06-01,117,87,1.4925,0.4023,0.9618,no
+logistic,base+odds,2024-06-01,117,87,1.5703,0.3793,0.9618,no
+market,raw_devigged,2024-06-01,117,87,0.9618,,0.9618,reference
