@@ -28,7 +28,7 @@ Training is restricted to matches that have betting odds.
 ```bash
 # 1. refresh the live bracket + odds (paid; ~1 credit)
 python odds.py --keychain-service prior-labs-football-the-odds-api \
-  --keychain-account adamhicks upcoming --execute
+  --keychain-account <your-account> upcoming --execute
 
 # 2. write submission.csv (the blend)
 python predict.py

@@ -68,7 +68,7 @@ confirming the ceiling. The biggest realized gain came from **better odds proces
 ## Reproduce
 ```bash
 python odds.py --keychain-service prior-labs-football-the-odds-api \
-  --keychain-account adamhicks upcoming --execute   # refresh live bracket + odds
+  --keychain-account <your-account> upcoming --execute   # refresh live bracket + odds
 python evaluate.py --blend                          # re-validate the blend weight
 python predict.py                                   # write submission.csv (the blend)
 ```
