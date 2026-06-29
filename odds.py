@@ -54,6 +54,18 @@ FEED_TO_RESULTS = {
     "Türkiye": "Turkey",
 }
 
+# Sharp bookmakers / exchanges. When present in an event, the consensus uses only
+# these (they are far better calibrated than soft books); otherwise it falls back
+# to all books. Pinnacle is in nearly every event in our data.
+SHARP_BOOKS = {
+    "pinnacle",
+    "betfair_ex_eu",
+    "betfair_ex_uk",
+    "betfair",
+    "matchbook",
+    "smarkets",
+}
+
 
 @dataclass(frozen=True)
 class Tournament:
@@ -397,54 +409,84 @@ def fetch_historical_odds(
             event = events.get(target.event_id)
             if event is None:
                 continue
-            if target.orientation == "direct":
-                target_api_home, target_api_away = target.api_home_team, target.api_away_team
-            elif target.orientation == "reversed":
-                target_api_home, target_api_away = target.api_away_team, target.api_home_team
-            else:
-                raise ValueError(f"Unknown orientation {target.orientation!r} for event {target.event_id}")
-            direct_at_snapshot = (
-                event.get("home_team") == target_api_home and event.get("away_team") == target_api_away
-            )
-            reversed_at_snapshot = (
-                event.get("home_team") == target_api_away and event.get("away_team") == target_api_home
-            )
-            if not (direct_at_snapshot or reversed_at_snapshot):
-                raise ValueError(
-                    f"Team-pair mismatch for event {target.event_id}: "
-                    f"expected {target_api_home} vs {target_api_away}, got "
-                    f"{event.get('home_team')} vs {event.get('away_team')}"
-                )
-            consensus = consensus_h2h(event)
-            if consensus is None:
-                continue
-            if reversed_at_snapshot:
-                consensus["market_p_home"], consensus["market_p_away"] = (
-                    consensus["market_p_away"],
-                    consensus["market_p_home"],
-                )
-                consensus["market_home_std"], consensus["market_away_std"] = (
-                    consensus["market_away_std"],
-                    consensus["market_home_std"],
-                )
-            rows.append(
-                {
-                    "date": target.date,
-                    "home_team": target.home_team,
-                    "away_team": target.away_team,
-                    "event_id": target.event_id,
-                    "sport_key": sport_key,
-                    "commence_time": target.commence_time,
-                    "submission_cutoff": target.prediction_cutoff,
-                    "observed_at": observed_at,
-                    **consensus,
-                }
-            )
+            row = _consensus_row(event, target, str(sport_key), observed_at)
+            if row is not None:
+                rows.append(row)
     return pd.DataFrame(rows), {
         "estimated_upper_bound": estimated,
         "actual_spent": spent,
         "remaining": remaining,
     }
+
+
+def _consensus_row(event: dict[str, Any], target: Any, sport_key: str, observed_at: str) -> dict[str, object] | None:
+    """Build one features row from an event + its manifest target (handles orientation)."""
+    if target.orientation == "direct":
+        api_home, api_away = target.api_home_team, target.api_away_team
+    elif target.orientation == "reversed":
+        api_home, api_away = target.api_away_team, target.api_home_team
+    else:
+        raise ValueError(f"Unknown orientation {target.orientation!r} for event {target.event_id}")
+    direct = event.get("home_team") == api_home and event.get("away_team") == api_away
+    reversed_at_snapshot = event.get("home_team") == api_away and event.get("away_team") == api_home
+    if not (direct or reversed_at_snapshot):
+        raise ValueError(
+            f"Team-pair mismatch for event {target.event_id}: expected {api_home} vs {api_away}, "
+            f"got {event.get('home_team')} vs {event.get('away_team')}"
+        )
+    consensus = consensus_h2h(event)
+    if consensus is None:
+        return None
+    if reversed_at_snapshot:
+        consensus["market_p_home"], consensus["market_p_away"] = (
+            consensus["market_p_away"], consensus["market_p_home"],
+        )
+        consensus["market_home_std"], consensus["market_away_std"] = (
+            consensus["market_away_std"], consensus["market_home_std"],
+        )
+    return {
+        "date": target.date,
+        "home_team": target.home_team,
+        "away_team": target.away_team,
+        "event_id": target.event_id,
+        "sport_key": sport_key,
+        "commence_time": target.commence_time,
+        "submission_cutoff": target.prediction_cutoff,
+        "observed_at": observed_at,
+        **consensus,
+    }
+
+
+def rebuild_from_cache(manifest: pd.DataFrame, raw_dir: str | Path) -> pd.DataFrame:
+    """Re-derive the historical features table from cached raw responses (no spend).
+
+    Use after changing the consensus method (de-vig / book selection). Scans every
+    cached odds response regardless of which markets/regions it was fetched under.
+    """
+    index: dict[tuple[str, str], Any] = {}
+    base = Path(raw_dir) / "raw"
+    for path in [*base.rglob("odds_*.json"), *base.rglob("upcoming_*.json")]:
+        try:
+            envelope = json.loads(path.read_text(encoding="utf-8"))
+        except (json.JSONDecodeError, OSError):
+            continue
+        request = envelope.get("request", {})
+        index[(request.get("sport_key"), request.get("timestamp"))] = envelope.get("response")
+
+    rows: list[dict[str, object]] = []
+    for target in manifest.itertuples():
+        body = index.get((target.sport_key, target.prediction_cutoff))
+        if body is None:
+            continue
+        events = {event["id"]: event for event in _response_data(body)}
+        event = events.get(target.event_id)
+        if event is None:
+            continue
+        observed_at = _response_timestamp(body, fallback=str(target.prediction_cutoff))
+        row = _consensus_row(event, target, str(target.sport_key), observed_at)
+        if row is not None:
+            rows.append(row)
+    return pd.DataFrame(rows)
 
 
 def fetch_upcoming_odds(
@@ -454,13 +496,15 @@ def fetch_upcoming_odds(
     markets: tuple[str, ...],
     regions: tuple[str, ...],
     raw_dir: str | Path,
+    fresh: bool = False,
 ) -> tuple[pd.DataFrame, dict[str, Any]]:
     """Fetch CURRENT odds for ALL upcoming events of a sport and de-vig them.
 
     Uses the live ``sports/{key}/odds`` endpoint (~1 credit/region/market), not the
     10x historical one. The feed itself is the authoritative fixture list, so every
     event with a usable consensus is written (team names mapped back to data-source
-    names via the reverse alias map).
+    names via the reverse alias map). ``fresh=True`` bypasses the hourly cache to
+    grab the very latest (closing) line -- use right before submitting.
     """
     parameters = {
         "regions": list(regions),
@@ -468,9 +512,11 @@ def fetch_upcoming_odds(
         "oddsFormat": "decimal",
         "dateFormat": "iso",
     }
-    # Cache at hour granularity so same-hour reruns do not re-spend.
-    stamp = _iso(pd.Timestamp.now(tz="UTC"))[:13]
-    response = load_raw_response(
+    # Cache at hour granularity so same-hour reruns do not re-spend; minute
+    # granularity (and skip the read) when --fresh forces the latest line.
+    now = pd.Timestamp.now(tz="UTC")
+    stamp = _iso(now)[:16] if fresh else _iso(now)[:13]
+    response = None if fresh else load_raw_response(
         raw_dir, kind="upcoming", sport_key=sport_key, timestamp=stamp, parameters=parameters
     )
     if response is None:
@@ -525,11 +571,46 @@ def fetch_upcoming_odds(
     return pd.DataFrame(rows), info
 
 
+def _devig_shin(decimal: list[float]) -> tuple[np.ndarray, float]:
+    """De-vig 3-way decimal odds with Shin's method; returns (probs, overround).
+
+    Shin's method (Shin 1993) corrects the favorite-longshot bias that simple
+    proportional normalization leaves in. Solves for the insider-trading share z
+    such that the implied true probabilities sum to one. Falls back to
+    proportional de-vigging if the solve degenerates.
+    """
+    implied = np.reciprocal(np.asarray(decimal, dtype=float))
+    booksum = float(implied.sum())
+    if booksum <= 1.0:
+        return implied / booksum, booksum
+
+    def probs(z: float) -> np.ndarray:
+        return (
+            np.sqrt(z * z + 4.0 * (1.0 - z) * implied * implied / booksum) - z
+        ) / (2.0 * (1.0 - z))
+
+    low, high = 0.0, 0.5
+    while probs(high).sum() > 1.0 and high < 0.99:
+        high = min(high * 1.5, 0.99)
+    for _ in range(60):
+        mid = 0.5 * (low + high)
+        if probs(mid).sum() > 1.0:
+            low = mid
+        else:
+            high = mid
+    estimate = probs(0.5 * (low + high))
+    total = float(estimate.sum())
+    if not np.isfinite(estimate).all() or (estimate <= 0).any() or total <= 0:
+        return implied / booksum, booksum
+    return estimate / total, booksum
+
+
 def consensus_h2h(event: dict[str, Any]) -> dict[str, float | int] | None:
-    """Create a robust median consensus after de-vigging each bookmaker."""
+    """Robust consensus: Shin-de-vigged median across sharp books (or all books)."""
     home = event.get("home_team")
     away = event.get("away_team")
-    per_book: list[tuple[float, float, float, float]] = []
+    all_books: list[tuple[float, float, float, float]] = []
+    sharp_books: list[tuple[float, float, float, float]] = []
     for bookmaker in event.get("bookmakers", []):
         markets = [m for m in bookmaker.get("markets", []) if m.get("key") == "h2h"]
         if len(markets) != 1:
@@ -541,13 +622,16 @@ def consensus_h2h(event: dict[str, Any]) -> dict[str, float | int] | None:
             continue
         if any(not np.isfinite(price) or price <= 1.0 for price in decimal):
             continue
-        implied = np.reciprocal(decimal)
-        overround = float(implied.sum())
-        per_book.append((*map(float, implied / overround), overround))
-    if not per_book:
-        return None
+        probabilities, overround = _devig_shin(decimal)
+        row = (*map(float, probabilities), overround)
+        all_books.append(row)
+        if bookmaker.get("key") in SHARP_BOOKS:
+            sharp_books.append(row)
 
-    values = np.asarray(per_book)
+    selected = sharp_books or all_books
+    if not selected:
+        return None
+    values = np.asarray(selected)
     consensus = np.median(values[:, :3], axis=0)
     consensus /= consensus.sum()
     return {
@@ -733,6 +817,16 @@ def parse_args() -> argparse.Namespace:
     upcoming.add_argument("--markets", default="h2h")
     upcoming.add_argument("--regions", default="eu")
     upcoming.add_argument("--execute", action="store_true", help="Make the paid request (dry-run by default)")
+    upcoming.add_argument(
+        "--fresh", action="store_true",
+        help="Bypass the hourly cache for the very latest (closing) line; run right before submitting",
+    )
+
+    rebuild = subparsers.add_parser(
+        "rebuild", help="Re-derive features.csv from cached raw responses (no spend)"
+    )
+    rebuild.add_argument("--manifest", type=Path, default=MANIFEST_PATH)
+    rebuild.add_argument("--output", type=Path, default=FEATURES_PATH)
 
     discover = subparsers.add_parser("discover", help="Discover exact historical event IDs (quota-light)")
     discover.add_argument("--output", type=Path, default=MANIFEST_PATH)
@@ -795,6 +889,7 @@ def main() -> None:
             markets=markets,
             regions=regions,
             raw_dir=args.data_root,
+            fresh=args.fresh,
         )
         existing = pd.read_csv(args.output) if args.output.exists() else pd.DataFrame()
         combined = pd.concat([existing, new_rows], ignore_index=True) if len(existing) else new_rows
@@ -806,6 +901,17 @@ def main() -> None:
         for pair in info["skipped"]:
             print(f"  skipped: {pair}")
         print(f"Credits remaining: {info['remaining']}")
+        return
+
+    if args.command == "rebuild":
+        manifest = pd.read_csv(args.manifest)
+        features = rebuild_from_cache(manifest, args.data_root)
+        audit = audit_snapshots(features, manifest)
+        args.output.parent.mkdir(parents=True, exist_ok=True)
+        features.to_csv(args.output, index=False)
+        print(f"Rebuilt {len(features)} historical rows from cache -> {args.output}")
+        print(json.dumps(audit, indent=2))
+        print("Note: re-run `upcoming --execute` to re-derive the live fixtures too.")
         return
 
     if args.command == "discover":
